@@ -17,6 +17,12 @@ using System.Text.RegularExpressions;
 using UnityEngine;
 
 /*
+TODO: toggle deep sea:
+ option to require them to toggle it before they enter the deep sea. 
+ option so there is no choice to turn it on once they've entered though. 
+ option where they can turn it off while in deep sea but not on
+ require attacked in x amount of time
+
 Fixed issues with the TwigDamage flag options and included in documentation
 Added `Allow Raiding In Deep Sea` (false) to include looting containers, can still be blocked by other plugins. Does not enable PVP, enable both options for that. 
 Added additional functionality to `Allow PVP Damage In Deep Sea` to allow looting players, corpses and backpacks, as well as allowing traps and turrets to target and kill players. You must enable the raiding option for raiding to be allowed. This option does NOT guarantee looting. Prevent Looting plugin will block it.
@@ -28,13 +34,13 @@ Added support for player-made boats to several existing options
 Renamed `Require Owner Online` to `Block Damage When Owner Is Online` retroactively for clarity
 Renamed "Apply To Twig" retroactively
 Added `Vehicles can hurt NPC players (true = ignore this option)` and stopped applying vehicle rules to mounted players which prevented players from hurting npcs by hitting them with a vehicle
-Reimplemented `Allow Killing Sleepers (TC Auth Only)` with a single option `Amount of entities required to authorize the kill (50 or higher recommended)` and players must wait 15 seconds between each failed attempt
+Reimplemented `Allow Killing Sleepers (TC Auth Only)` with new options
 Updated `Allow Killing Sleepers (TC Auth Only)` to support player-made boats
 */
 
 namespace Oxide.Plugins
 {
-    [Info("TruePVE", "nivex", "2.3.7")]
+    [Info("TruePVE", "nivex", "2.3.711")]
     [Description("Improvement of the default Rust PVE behavior")]
     // Thanks to the original author, ignignokt84.
     internal class TruePVE : RustPlugin
@@ -253,6 +259,7 @@ namespace Oxide.Plugins
             }
             Unsubscribe(nameof(CanLootEntity));
             Unsubscribe(nameof(OnCodeEntered));
+            Unsubscribe(nameof(CanChangeCode));
             Unsubscribe(nameof(OnCupboardAuthorize));
             Unsubscribe(nameof(CanHelicopterStrafeTarget));
 			Unsubscribe(nameof(CanWaterBallSplash));
@@ -363,6 +370,7 @@ namespace Oxide.Plugins
             {
                 Subscribe(nameof(OnCupboardAuthorize));
                 Subscribe(nameof(CanLootEntity));
+                Subscribe(nameof(CanChangeCode));
             }
             else if (config.options.Loot.Lifts)
             {
@@ -2096,7 +2104,7 @@ namespace Oxide.Plugins
                 {
                     return immortalFlag == DamageResult.Allow;
                 }
-                return HandleHelicopter(ruleSet, entity, weapon, victim, isVicId, heli == DamageResult.Allow);
+                return AllowHeliDamage(ruleSet, entity, weapon, victim, isVicId, heli == DamageResult.Allow);
             }
 
             if ((_flags & RuleFlags.NoMLRSDamage) != 0 && info.WeaponPrefab is MLRSRocket)
@@ -2628,7 +2636,7 @@ namespace Oxide.Plugins
             return (a - b).sqrMagnitude <= distance * distance;
         }
 
-        private bool HandleHelicopter(RuleSet ruleSet, BaseEntity entity, BaseEntity weapon, BasePlayer victim, bool isVicId, bool allow)
+        private bool AllowHeliDamage(RuleSet ruleSet, BaseEntity entity, BaseEntity weapon, BasePlayer victim, bool isVicId, bool allow)
         {
             if (entity is FarmableAnimal or ChickenCoop or Beehive)
             {
@@ -2638,8 +2646,11 @@ namespace Oxide.Plugins
             var eval = EvaluateRules(entity, weapon, ruleSet, false);
             if (eval != DamageResult.None)
             {
-                string action = eval == DamageResult.Allow ? "allow and return" : "block and return";
-                Trace($"Initiator is heli, target is {entity.ShortPrefabName}; {action}", 1);
+                if (trace)
+                {
+                    string action = eval == DamageResult.Allow ? "allow and return" : "block and return";
+                    Trace($"Initiator is heli, target is {entity.ShortPrefabName}; {action}", 1);
+                }
                 return eval == DamageResult.Allow;
             }
             if (isVicId)
@@ -2649,15 +2660,15 @@ namespace Oxide.Plugins
                     if (trace)
                     {
                         string action1 = victim.IsSleeping() ? "victim is sleeping; block and return" : "victim is not sleeping; continue checks";
-                        Trace($"Initiator is heli, and target is player; flag check results: {action1}", 1);
+                        Trace($"Initiator is heli, and target is player; flag check results: NoHeliDamageSleepers {action1}", 1);
                     }
                     if (victim.IsSleeping()) return false;
                 }
                 bool val = (ruleSet._flags & RuleFlags.NoHeliDamagePlayer) != 0;
                 if (trace)
                 {
-                    string action = val ? "flag set; block and return" : "flag not set; allow and return";
-                    Trace($"Initiator is heli, and target is player; flag check results: {action}", 1);
+                    string action = val ? "set; block and return" : "not set; allow and return";
+                    Trace($"Initiator is heli, and target is player; flag check results: NoHeliDamagePlayer {action}", 1);
                 }
                 return !val;
             }
@@ -2666,8 +2677,8 @@ namespace Oxide.Plugins
                 bool val = (ruleSet._flags & RuleFlags.NoHeliDamageQuarry) != 0;
                 if (trace)
                 {
-                    string action = val ? "flag set; block and return" : "flag not set; allow and return";
-                    Trace($"Initiator is heli, and target is quarry; flag check results: {action}", 1);
+                    string action = val ? "set; block and return" : "not set; allow and return";
+                    Trace($"Initiator is heli, and target is quarry; flag check results: NoHeliDamageQuarry {action}", 1);
                 }
                 return !val;
             }
@@ -2676,19 +2687,19 @@ namespace Oxide.Plugins
                 bool val = (ruleSet._flags & RuleFlags.NoHeliDamageRidableHorses) != 0;
                 if (trace)
                 {
-                    string action = val ? "flag set; block and return" : "flag not set; allow and return";
-                    Trace($"Initiator is heli, and target is ridablehorse; flag check results: {action}", 1);
+                    string action = val ? "set; block and return" : "not set; allow and return";
+                    Trace($"Initiator is heli, and target is ridablehorse; flag check results: NoHeliDamageRidableHorses {action}", 1);
                 }
                 return !val;
             }
-            if ((ruleSet._flags & RuleFlags.NoHeliDamageBuildings) != 0 && IsPlayerEntity(entity))
+            if ((ruleSet._flags & RuleFlags.NoHeliDamageBuildings) != 0 && IsPlayerEntity(entity, out bool isDeployable))
             {
-                if (!entity.HasParent() && entity is DecayEntity decayEntity && !HasBuildingPrivilege(decayEntity))
+                if (!entity.HasParent() && entity is DecayEntity decayEntity && !HasBuildingPrivilege(decayEntity, isDeployable || decayEntity is BoatBuildingBlock))
                 {
-                    if (trace) Trace($"Initiator is heli, {entity.ShortPrefabName} is not within TC; allow and return", 1);
+                    if (trace) Trace($"NoHeliDamageBuildings: Initiator is heli, {entity.ShortPrefabName} is not within TC; allow and return", 1);
                     return true;
                 }
-                if (trace) Trace($"Initiator is heli, {entity.ShortPrefabName} is within TC; block and return", 1);
+                if (trace) Trace($"NoHeliDamageBuildings: Initiator is heli, {entity.ShortPrefabName} is within TC; block and return", 1);
                 return false;
             }
             if (trace)
@@ -2699,11 +2710,27 @@ namespace Oxide.Plugins
             return allow;
         }
 
-        private bool HasBuildingPrivilege(DecayEntity decayEntity)
+        private bool HasBuildingPrivilege(DecayEntity ent, bool f)
         {
-            var building = decayEntity.GetBuilding();
-            if (building == null) return false;
-            return building.GetDominatingBuildingPrivilege() != null;
+            if (ent.Is(out BoatBuildingStation bbs))
+            {
+                return bbs.GetSteeringWheel() != null;
+            }
+            //if (f) // && TerrainMeta.HeightMap.GetHeight(ent.transform.position) < 0f)
+            //{
+            //    BoatBuildingStation station = BoatBuildingStation.GetStationIntersectingOBB(ent.WorldSpaceBounds(), isServer: true);
+            //    if (station != null)
+            //    {
+            //        return station.GetSteeringWheel() != null;
+            //    }
+            //}
+            var building = ent.GetBuilding();
+            if (building != null)
+            {
+                return building.GetDominatingBuildingPrivilege() != null;
+            }
+
+            return false;
         }
 
         private bool IsAlly(ulong vic, ulong atk) => vic switch
@@ -2727,12 +2754,13 @@ namespace Oxide.Plugins
                 return entity is Minicopter;
             }
 
-            return IsPlayerEntity(entity);
+            return IsPlayerEntity(entity, out _);
         }
 
-        private bool IsPlayerEntity(BaseEntity entity)
+        private bool IsPlayerEntity(BaseEntity entity, out bool isDeployable)
         {
-            if (entity is BaseMountable || entity is LegacyShelter || entity is LegacyShelterDoor || entity is FarmableAnimal)
+            isDeployable = false;
+            if (entity is BaseMountable or LegacyShelter or FarmableAnimal)
             {
                 return true;
             }
@@ -2751,14 +2779,15 @@ namespace Oxide.Plugins
             {
                 foreach (var def in ItemManager.GetItemDefinitions())
                 {
-                    if (def.TryGetComponent<ItemModDeployable>(out var imd))
+                    if (def.TryGetComponent(out ItemModDeployable imd))
                     {
                         _deployables.Add(imd.entityPrefab.resourcePath);
                     }
                 }
             }
 
-            return _deployables.Contains(entity.PrefabName);
+            isDeployable = _deployables.Contains(entity.PrefabName);
+            return isDeployable;
         }
 
         private void ExcludePlayer(ulong userid, float maxDelayLength, Plugin plugin)
@@ -3252,7 +3281,7 @@ namespace Oxide.Plugins
 
         private object CanLootEntity(BasePlayer player, ModularCarGarage carLift)
         {
-            if (player == null || carLift == null || carLift.OwnerID == player.userID)
+            if (!config.options.Loot.Lifts || player == null || carLift == null || carLift.OwnerID == player.userID)
                 return null;
 
             if (carLift.carOccupant != null && carLift.carOccupant.HasSlot(BaseEntity.Slot.Lock))
@@ -3594,6 +3623,11 @@ namespace Oxide.Plugins
             return true;
         }
 
+        private object CanChangeCode(BasePlayer player, CodeLock codeLock, string code, bool flag)
+        {
+            if (codeLock == null || !codeLock.GetParentEntity().Is(out BuildingPrivlidge priv) || !priv.OwnerID.IsSteamId()) return null;
+            return OnCupboardAuthorize(priv, player);
+        }
 
         #endregion Locks
 
