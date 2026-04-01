@@ -21,7 +21,7 @@ Fixed issue where game does not assign `creatorPlayer` to dropped explosives or 
 Fixed issues with the TwigDamage flag options and included in documentation
 Fixed `Prevent hackable crate timer from resetting when attacked`
 Added `Allow Raiding In Deep Sea` (false) to include looting containers, can still be blocked by other plugins. Does not enable PVP, enable both options for that. 
-Added additional functionality to `Allow PVP Damage In Deep Sea` to allow looting players, corpses and backpacks, as well as allowing traps and turrets to target and kill players. You must enable the raiding option for raiding to be allowed. This option does NOT guarantee looting. Prevent Looting plugin will block it.
+Added additional functionality to `Allow PVP Damage In Deep Sea` to allow looting players, corpses and backpacks, as well as allowing traps and turrets to target and kill players. You must enable the raiding option for raiding to be allowed. Other plugins can block this behavior.
 Added `Use Clans` (true) - several features depend on the functionality of these options to determine if a player is an ally of another player.
 Added `Use Friends` (true)
 Added `Use Teams` (true)
@@ -36,7 +36,7 @@ Updated `Allow Killing Sleepers (TC Auth Only)` to support player-made boats
 
 namespace Oxide.Plugins
 {
-    [Info("TruePVE", "nivex", "2.3.715")]
+    [Info("TruePVE", "nivex", "2.3.717")]
     [Description("Improvement of the default Rust PVE behavior")]
     // Thanks to the original author, ignignokt84.
     internal class TruePVE : RustPlugin
@@ -49,7 +49,7 @@ namespace Oxide.Plugins
         Plugin ZoneManager, LiteZones, Clans, Friends, AbandonedBases, RaidableBases;
 
         public string usageString;
-        public enum Command { def, sched, trace, usage, enable, sleepers };
+        public enum Command { def, sched, trace, usage, enable, sleepers, map, unmap };
         public enum DamageResult { None, Allow, Block }
 
         [Flags]
@@ -286,6 +286,8 @@ namespace Oxide.Plugins
             permission.RegisterPermission(PermCanMap, this);
             // build usage string for console (without sizing)
             usageString = WrapColor("orange", GetMessage("Header_Usage")) + $" - {Version}{Environment.NewLine}" +
+                          WrapColor("cyan", $"tpve.{Command.map}") + $" - {GetMessage("Cmd_Usage_mapzone")}{Environment.NewLine}" +
+                          WrapColor("cyan", $"tpve.{Command.unmap}") + $" - {GetMessage("Cmd_Usage_unmapzone")}{Environment.NewLine}" +
                           WrapColor("cyan", $"tpve.{Command.def}") + $" - {GetMessage("Cmd_Usage_def")}{Environment.NewLine}" +
                           WrapColor("cyan", $"tpve.{Command.trace}") + $" - {GetMessage("Cmd_Usage_trace")}{Environment.NewLine}" +
                           WrapColor("cyan", $"tpve.{Command.sched} [enable|disable]") + $" - {GetMessage("Cmd_Usage_sched")}{Environment.NewLine}" +
@@ -537,12 +539,13 @@ namespace Oxide.Plugins
             // return if user doesn't have access to run console command
             if (!user.IsAdmin) return;
 
-            if (args.Length > 0 && args[0] == "map")
+            if (args.Length > 0 && (args[0] == "map" || args[0] == "unmap"))
             {
                 if (user.HasPermission(PermCanMap))
                 {
                     CommandMap(user, command, args);
                 }
+                else user.Reply("You do not have the required truepve.canmap permission.");
                 return;
             }
 
@@ -603,6 +606,14 @@ namespace Oxide.Plugins
 					tpveEnabled = !tpveEnabled;
                     ValidateCurrentDamageHook();
                     Message(user, "Enable", tpveEnabled);
+                    return;
+                case Command.map:
+                case Command.unmap:
+                    if (user.HasPermission(PermCanMap))
+                    {
+                        CommandMap(user, command, args);
+                    }
+                    else user.Reply("You do not have the required truepve.canmap permission.");
                     return;
                 case Command.usage:
                 default:
@@ -704,12 +715,47 @@ namespace Oxide.Plugins
             // shift arguments
             args = args.Length > 1 ? args[1..] : Array.Empty<string>();
 
-            if (command != "map")
+            if (command != "map" && command != "unmap")
             {
                 Message(user, "Error_InvalidCommand");
             }
-            else if (args.Length == 0)
+            else if (args.Length == 0) // ideally this would just update from/to for the next if statement instead of reusing duplicated code
             {
+                BasePlayer player = user.Object as BasePlayer;
+                if (player != null)
+                {
+                    using var locs = GetLocationKeys(player);
+                    if (locs.Count > 0)
+                    {
+                        string from = locs[0]; // mapping name
+                        string to = "exclude";
+                        if (command == "map")
+                        {
+                            if (config.mappings.TryGetValue(from, out string old))
+                            {
+                                Message(user, "Notify_MappingUpdated", from, old, to); // update existing mapping
+                            }
+                            else Message(user, "Notify_MappingCreated", from, to); // add new mapping
+                            config.mappings[from] = to;
+                        }
+                        else if (command == "unmap")
+                        {
+                            if (config.mappings.Remove(from, out to))
+                            {
+                                Message(user, "Notify_MappingDeleted", from, to);
+                                config.mappings.Remove(from);
+                            }
+                            else
+                            {
+                                Message(user, "Error_InvalidMapping", from, to);
+                                return;
+                            }
+                        }
+                        SaveConfig();
+                        TryBuildExclusionMappings();
+                        return;
+                    }
+                }
                 Message(user, "Error_InvalidParamForCmd", command);
             }
             else
@@ -724,9 +770,8 @@ namespace Oxide.Plugins
                         Message(user, "Error_InvalidMapping", from, to);
                         return;
                     }
-                    if (config.HasMapping(from))
+                    if (config.mappings.TryGetValue(from, out string old))
                     {
-                        string old = config.mappings[from];
                         Message(user, "Notify_MappingUpdated", from, old, to); // update existing mapping
                     }
                     else Message(user, "Notify_MappingCreated", from, to); // add new mapping
@@ -1787,12 +1832,18 @@ namespace Oxide.Plugins
             var isAtkId = isAttacker && attacker.userID.IsSteamId();
             var isVictim = victim != null && !victim.IsDestroyed;
             var isVicId = isVictim && victim.userID.IsSteamId();
+            var weapon = initiator ?? info.WeaponPrefab ?? info.Weapon;
 
             if (Interface.CallHook("CanEntityTakeDamage", new object[] { entity, info }) is bool val)
             {
                 if (val && config.options.ArmorDamage.Enabled && isAttacker && !isAtkId && isVicId)
                 {
                     HandleHitArea(victim, info);
+                }
+                if (trace)
+                {
+                    string action = !val ? "block and return" : "allow and return";
+                    Trace($"Initiator is {weapon}; target is {entity}; override by another plugin; {action}", 1);
                 }
                 return val;
             }
@@ -1808,8 +1859,6 @@ namespace Oxide.Plugins
             {
                 HandleHitArea(victim, info);
             }
-
-            var weapon = initiator ?? info.WeaponPrefab ?? info.Weapon;
 
             if (config.options.DeepSeaRaiding && !isVictim && (entity is BaseMountable || entity.OwnerID.IsSteamId()) && IsInDeepSea(entity.transform.position))
             {
@@ -1920,6 +1969,13 @@ namespace Oxide.Plugins
             }
 
             if (trace) Trace("No exclusion found - looking up RuleSet...", 1);
+
+            //if (isVicId && !isAtkId && weapon is BeeGrenade && ruleSet.rules.Contains("players cannot hurt players"))
+            //{
+            //    if (trace) Trace($"Victim is {victim}; no initiator set for Bee Grenade; players cannot hurt players", 1);
+            //    info.damageTypes.ScaleAll(0f);
+            //    return true;
+            //}
 
             // process location rules
             RuleFlags _flags = ruleSet._flags;
@@ -2126,7 +2182,7 @@ namespace Oxide.Plugins
                 {
                     return immortalFlag == DamageResult.Allow;
                 }
-                return AllowHeliDamage(ruleSet, entity, weapon, victim, damageType, isVicId, heli == DamageResult.Allow);
+                return AllowHeliDamage(ruleSet, entity, weapon, victim, isVicId, heli == DamageResult.Allow);
             }
 
             if ((_flags & RuleFlags.NoMLRSDamage) != 0 && info.WeaponPrefab is MLRSRocket)
@@ -2660,7 +2716,7 @@ namespace Oxide.Plugins
             return (a - b).sqrMagnitude <= distance * distance;
         }
 
-        private bool AllowHeliDamage(RuleSet ruleSet, BaseEntity entity, BaseEntity weapon, BasePlayer victim, DamageType damageType, bool isVicId, bool allow)
+        private bool AllowHeliDamage(RuleSet ruleSet, BaseEntity entity, BaseEntity weapon, BasePlayer victim, bool isVicId, bool allow)
         {
             if (entity is FarmableAnimal or ChickenCoop or Beehive)
             {
@@ -2718,7 +2774,7 @@ namespace Oxide.Plugins
             }
             if ((ruleSet._flags & RuleFlags.NoHeliDamageBuildings) != 0 && IsPlayerEntity(entity))
             {
-                if (!entity.HasParent() && entity is DecayEntity decayEntity && !HasBuildingPrivilege(decayEntity, damageType))
+                if (!entity.HasParent() && entity is DecayEntity decayEntity && !HasBuildingPrivilege(decayEntity))
                 {
                     if (trace) Trace($"NoHeliDamageBuildings: Initiator is heli, {entity.ShortPrefabName} is not within priv; allow and return", 1);
                     return true;
@@ -2734,7 +2790,7 @@ namespace Oxide.Plugins
             return allow;
         }
 
-        private bool HasBuildingPrivilege(DecayEntity ent, DamageType damageType)
+        private bool HasBuildingPrivilege(DecayEntity ent)
         {
             if (ent is BoatBuildingStation station)
             {
@@ -2742,7 +2798,7 @@ namespace Oxide.Plugins
             }
             if (ent is BoatBuildingBlock b)
             {
-                return true;
+                return true; // BoatBuildingStation.GetStationOverlappingPosition(b.transform.position, b.isServer)?.GetSteeringWheel() != null;
             }
             BuildingManager.Building building = ent.GetBuilding();
             if (building == null)
@@ -3231,14 +3287,11 @@ namespace Oxide.Plugins
             if (ent.creatorEntity.Is(out BasePlayer owner))
             {
                 ent.creatorPlayer = owner;
-            }
-            else if (!ent.OwnerID.IsSteamId())
-            {
-                return;
+                if (ent.OwnerID == 0) ent.OwnerID = owner.userID;
             }
             else if (BasePlayer.TryFindByID(ent.OwnerID, out owner))
             {
-                ent.creatorEntity ??= owner;
+                ent.creatorEntity = owner;
                 ent.creatorPlayer = owner;
             }
         }
@@ -5787,6 +5840,8 @@ namespace Oxide.Plugins
                 {"Twig", "<color=#ff0000>WARNING:</color> It is against server rules to destroy other players' items. Actions logged for admin review." },
 
                 {"Header_Usage", "---- TruePVE usage ----"},
+                {"Cmd_Usage_mapzone", "Adds a mapping for the current zone manager zone"},
+                {"Cmd_Usage_unmapzone", "Removes a mapping for the current zone manager zone"},
                 {"Cmd_Usage_def", "Loads default configuration and data"},
                 {"Cmd_Usage_sched", "Enable or disable the schedule" },
                 {"Cmd_Usage_prod", "Show the prefab name and type of the entity being looked at"},
