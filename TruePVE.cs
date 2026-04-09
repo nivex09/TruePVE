@@ -17,7 +17,7 @@ using System.Text.RegularExpressions;
 using UnityEngine;
 
 /*
-Fixed issue where game does not assign `creatorPlayer` to dropped explosives or when catapulted (bee grenades, bee catapult bombs, supply signal, etc)
+Fixed issue where game does not assign `creatorPlayer` to bee grenades, bee catapult bombs, and supply signals when dropped or catapulted
 Fixed issues with the TwigDamage flag options and included in documentation
 Fixed `Prevent hackable crate timer from resetting when attacked`
 Added `Allow Raiding In Deep Sea` (false) to include looting containers, can still be blocked by other plugins. Does not enable PVP, enable both options for that. 
@@ -36,7 +36,7 @@ Updated `Allow Killing Sleepers (TC Auth Only)` to support player-made boats
 
 namespace Oxide.Plugins
 {
-    [Info("TruePVE", "nivex", "2.3.717")]
+    [Info("TruePVE", "nivex", "2.3.719")]
     [Description("Improvement of the default Rust PVE behavior")]
     // Thanks to the original author, ignignokt84.
     internal class TruePVE : RustPlugin
@@ -133,6 +133,7 @@ namespace Oxide.Plugins
             DamageType.Generic,
             DamageType.Slash,
             DamageType.Stab,
+            DamageType.Cannon
         };
 
         private uint maincannonshell = 3032863244;
@@ -957,6 +958,16 @@ namespace Oxide.Plugins
                     continue;
                 }
 
+                if (group.members.Contains("heli_napalm"))
+                {
+                    group.members = ReplaceMember(group.members, "heli_napalm", "napalm");
+                    var fire = config.groups.Find(x => x.name == "fire");
+                    if (fire != null && fire.members.Contains("FireBall") && !fire.exclusions.Contains("napalm"))
+                    {
+                        fire.exclusions = fire.exclusions.Length == 0 ? "napalm" : fire.exclusions + ", napalm";
+                    }
+                }
+
                 if (updates.TryGetValue(group.name, out var update) && !ContainedInGroups(update))
                 {
                     group.members = $"{group.members.TrimEnd(',', ' ')}{", "}{update}";
@@ -1137,7 +1148,8 @@ namespace Oxide.Plugins
 
             config.groups.Add(new("fire")
             {
-                members = "FireBall, FlameExplosive, FlameThrower, BaseOven, FlameTurret, napalm, oilfireball2"
+                members = "FireBall, FlameExplosive, FlameThrower, BaseOven, FlameTurret, oilfireball2",
+                exclusions = "napalm"
             });
 
             config.groups.Add(new("guards")
@@ -1147,7 +1159,7 @@ namespace Oxide.Plugins
 
             config.groups.Add(new("heli")
             {
-                members = "PatrolHelicopter, oilfireballsmall, heli_napalm, rocket_heli, rocket_heli_napalm"
+                members = "PatrolHelicopter, oilfireballsmall, rocket_heli, rocket_heli_napalm, napalm"
             });
 
             config.groups.Add(new("highwalls")
@@ -1187,7 +1199,7 @@ namespace Oxide.Plugins
 
             config.groups.Add(new("players")
             {
-                members = "BasePlayer, FrankensteinPet"
+                members = "BasePlayer, FrankensteinPet, BeeGrenade"
             });
 
             config.groups.Add(new("resources")
@@ -3278,7 +3290,11 @@ namespace Oxide.Plugins
             return true;
         }
 
-        private void OnEntitySpawned(TimedExplosive ent)
+        private void OnEntitySpawned(BeeGrenade ent) => ExplosiveHandler(ent);
+
+        private void OnEntitySpawned(SupplySignal ent) => ExplosiveHandler(ent);
+
+        private void ExplosiveHandler(TimedExplosive ent)
         {
             if (ent == null || ent.creatorPlayer != null)
             {
