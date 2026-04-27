@@ -36,7 +36,7 @@ Updated `Allow Killing Sleepers (TC Auth Only)` to support player-made boats
 
 namespace Oxide.Plugins
 {
-    [Info("TruePVE", "nivex", "2.3.719")]
+    [Info("TruePVE", "nivex", "2.3.721")]
     [Description("Improvement of the default Rust PVE behavior")]
     // Thanks to the original author, ignignokt84.
     internal class TruePVE : RustPlugin
@@ -238,6 +238,11 @@ namespace Oxide.Plugins
 
         private void Init()
         {
+            if (config.AllowKillingSleepersHoursOffline <= 0f)
+            {
+                Unsubscribe(nameof(OnPlayerSleep));
+                Unsubscribe(nameof(OnPlayerSleepEnded));
+            }
             if (!config.laptop)
             {
                 Unsubscribe(nameof(OnCrateLaptopAttack));
@@ -468,10 +473,7 @@ namespace Oxide.Plugins
                     data.LastSeen.Clear();
                     SaveData();
                 }
-                return;
             }
-            timer.Every(60f, UpdateLastSeen);
-            UpdateLastSeen();
         }
 
         private void SaveData()
@@ -480,32 +482,21 @@ namespace Oxide.Plugins
             Interface.Oxide.DataFileSystem.WriteObject(Name, data);
         }
 
-        public void UpdateLastSeen()
+        private void OnPlayerSleep(BasePlayer player)
         {
-            bool changed = false;
-            foreach (var sleeper in BasePlayer.sleepingPlayerList)
+            if (player.IsConnected)
             {
-                if (sleeper == null || !sleeper.userID.IsSteamId())
-                {
-                    continue;
-                }
-                if (!data.LastSeen.ContainsKey(sleeper.userID) && !sleeper.IsBuildingAuthed(true))
-                {
-                    data.LastSeen[sleeper.userID] = Epoch.Current;
-                    changed = true;
-                }
+                data.LastSeen.Remove(player.userID);
             }
-            foreach (var player in BasePlayer.activePlayerList)
+            else if (!player.IsBuildingAuthed(true))
             {
-                if (data.LastSeen.Remove(player.userID))
-                {
-                    changed = true;
-                }
+                data.LastSeen[player.userID] = Epoch.Current;
             }
-            if (changed)
-            {
-                SaveData();
-            }
+        }
+
+        private void OnPlayerSleepEnded(BasePlayer player)
+        {
+            data.LastSeen.Remove(player.userID);
         }
 
         public bool CanKillOfflinePlayer(BasePlayer player, out double timeLeft)
